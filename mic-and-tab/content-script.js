@@ -1,55 +1,77 @@
-let socket
+let socket;
 
-chrome.storage.local.set({ transcript: '' })
+chrome.storage.local.set({ transcript: "" });
 
-let apiKey
-chrome.storage.local.get('key', ({ key }) => apiKey = key)
+let apiKey = "bd7d01faf4086045f8f1e7ff4f0c06983d608352";
 
-navigator.mediaDevices.getDisplayMedia({ video: true, audio: true }).then(async screenStream => {
-    if(!apiKey) return alert('You must provide a Deepgram API Key in the options page.')
-    if(screenStream.getAudioTracks().length == 0) return alert('You must share your tab with audio. Refresh the page.')
+startRecording();
 
-    const micStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+let mediaRecorder;
 
-    const audioContext = new AudioContext()
-    const mixed = mix(audioContext, [screenStream, micStream])
-    const recorder = new MediaRecorder(mixed, { mimeType: 'audio/webm' })
+async function startRecording() {
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: true,
+  });
 
-    socket = new WebSocket('wss://api.deepgram.com/v1/listen?model=general-enhanced', ['token', apiKey])
+  console.log("[CS] After mic stream....", stream);
 
-    recorder.addEventListener('dataavailable', evt => {
-        if(evt.data.size > 0 && socket.readyState == 1) socket.send(evt.data)
-    })
+  mediaRecorder = new MediaRecorder(stream);
 
-    socket.onopen = () => { recorder.start(250) }
+  let chunks = [];
 
-    socket.onmessage = msg => {
-        const { transcript } = JSON.parse(msg.data).channel.alternatives[0]
-        if(transcript) {
-            console.log(transcript)
-            chrome.storage.local.get('transcript', data => {
-                chrome.storage.local.set({ transcript: data.transcript += ' ' + transcript })
+  mediaRecorder.addEventListener("dataavailable", (event) => {
+    console.log("event: ", event);
+    chunks.push(event.data);
 
-                // Throws error when popup is closed, so this swallows the errors.
-                chrome.runtime.sendMessage({ message: 'transcriptavailable' }).catch(err => ({}))
-            })
-        }
+    console.log("CHUNKS: ", chunks);
+  });
+
+  mediaRecorder.addEventListener("stop", async () => {
+    console.log("Stopping recording....");
+
+    const audioBlob = new Blob(chunks, {
+      type: "audio/webm",
+    });
+
+    const file = audioBlob;
+
+    const storedToken = "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";
+
+    const headers = new Headers({
+      Authorization: `Bearer ${storedToken}`,
+    });
+    const formData = new FormData();
+    formData.append("file", file, "recording.webm");
+    formData.append("model", "whisper-1");
+
+    const requestOptions = {
+      method: "POST",
+      headers,
+      body: formData,
+      redirect: "follow",
+    };
+
+    const response = await fetch(
+      "https://api.openai.com/v1/audio/transcriptions",
+      requestOptions
+    );
+    if (response.status === 200) {
+      const result = await response.json();
+      const resultText = result.text;
+
+      console.log("Text successfully saved: ", resultText);
+
+      stream.getTracks().forEach((track) => track.stop());
+    } else {
+      stream.getTracks().forEach((track) => track.stop());
     }
-})
+  });
+
+  mediaRecorder.start();
+}
 
 chrome.runtime.onMessage.addListener(({ message }) => {
-    if(message == 'stop') {
-        socket.close()
-        alert('Transcription ended')
-    }
-})
-
-// https://stackoverflow.com/a/47071576
-function mix(audioContext, streams) {
-    const dest = audioContext.createMediaStreamDestination()
-    streams.forEach(stream => {
-        const source = audioContext.createMediaStreamSource(stream)
-        source.connect(dest);
-    })
-    return dest.stream
-}
+  if (message == "stop") {
+    mediaRecorder.stop();
+  }
+});
